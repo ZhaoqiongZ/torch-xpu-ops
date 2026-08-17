@@ -179,7 +179,7 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: ${{ needs.parse-command.outputs.pr_number }},
+              issue_number: ${{ needs.parse-command.outputs.issue_number }},
               body: 'Unknown command. Use `@torchxpubot help` to see available commands.'
             });
 
@@ -207,7 +207,7 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: ${{ needs.parse-command.outputs.pr_number }},
+              issue_number: ${{ needs.parse-command.outputs.issue_number }},
               body: msg
             });
 
@@ -235,11 +235,12 @@ jobs:
             | \`@torchxpubot rerun -b <branch_or_commit>\` | Rerun CI against a pytorch ref |
             | \`@torchxpubot review\` (or \`pr-review\`) | AI-powered PR code review |
             | \`@torchxpubot ut-check\` (or \`check-ut\`, \`ut\`) | Analyze UT results: new failures, relevance, coverage |
+            | \`@torchxpubot triage\` | (Issues only) Shallow triage: classify, detect reproducer, apply agent labels |
             | \`@torchxpubot help\` | Show this help message |`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: ${{ needs.parse-command.outputs.pr_number }},
+              issue_number: ${{ needs.parse-command.outputs.issue_number }},
               body: helpText.replace(/^ +/gm, '')
             });
 
