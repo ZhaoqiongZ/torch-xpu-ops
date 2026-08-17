@@ -40,6 +40,7 @@ jobs:
       issue_number: ${{ steps.parse.outputs.issue_number }}
       actor: ${{ steps.parse.outputs.actor }}
       authorized: ${{ steps.parse.outputs.authorized }}
+      context_error: ${{ steps.parse.outputs.context_error }}
     steps:
       - name: Acknowledge Command
         uses: actions/github-script@v9
@@ -95,7 +96,8 @@ jobs:
             // the rest are PR-only.
             if (normalizedCommand === 'triage') {
               if (isPR) {
-                core.setOutput('command', 'invalid');
+                core.setOutput('command', 'wrong-context');
+                core.setOutput('context_error', 'triage-on-pr');
                 core.setOutput('pr_number', prNumber);
                 core.setOutput('issue_number', String(issueNumber));
                 core.setOutput('actor', actor);
@@ -103,7 +105,8 @@ jobs:
                 return;
               }
               if (context.payload.issue.state !== 'open') {
-                core.setOutput('command', 'invalid');
+                core.setOutput('command', 'wrong-context');
+                core.setOutput('context_error', 'triage-closed-issue');
                 core.setOutput('pr_number', prNumber);
                 core.setOutput('issue_number', String(issueNumber));
                 core.setOutput('actor', actor);
@@ -183,11 +186,35 @@ jobs:
               body: 'Unknown command. Use `@torchxpubot help` to see available commands.'
             });
 
+  wrong-context:
+    needs: parse-command
+    runs-on: ubuntu-latest
+    if: needs.parse-command.outputs.command == 'wrong-context'
+    steps:
+      - name: Post wrong-context message
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ secrets.MERGE_TOKEN }}
+          script: |
+            const err = '${{ needs.parse-command.outputs.context_error }}';
+            const messages = {
+              'triage-on-pr': '`@torchxpubot triage` only runs on issues, not PRs. Try `@torchxpubot review` or `pr-review` for PR analysis.',
+              'triage-closed-issue': '`@torchxpubot triage` only runs on open issues. Please reopen the issue to triage it.',
+            };
+            const body = messages[err] || 'Command not applicable in this context.';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.parse-command.outputs.issue_number }},
+              body: body
+            });
+
   permission-denied:
     needs: parse-command
     runs-on: ubuntu-latest
     if: >-
       needs.parse-command.outputs.command != 'invalid'
+      && needs.parse-command.outputs.command != 'wrong-context'
       && needs.parse-command.outputs.command != 'help'
       && needs.parse-command.outputs.command != ''
       && needs.parse-command.outputs.authorized == 'false'
