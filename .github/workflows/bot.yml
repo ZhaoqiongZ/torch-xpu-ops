@@ -25,7 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'issue_comment'
-      && github.event.issue.pull_request
       && startsWith(github.event.comment.body, '@torchxpubot')
     permissions:
       pull-requests: read
@@ -113,6 +112,15 @@ jobs:
                 core.setOutput('authorized', 'false');
                 return;
               }
+            } else if (normalizedCommand !== 'help' && !isPR) {
+              // All non-triage, non-help commands are PR-only.
+              core.setOutput('command', 'wrong-context');
+              core.setOutput('context_error', 'pr-only-on-issue');
+              core.setOutput('pr_number', prNumber);
+              core.setOutput('issue_number', String(issueNumber));
+              core.setOutput('actor', actor);
+              core.setOutput('authorized', 'false');
+              return;
             }
 
             // Permission check
@@ -200,6 +208,7 @@ jobs:
             const messages = {
               'triage-on-pr': '`@torchxpubot triage` only runs on issues, not PRs. Try `@torchxpubot review` or `pr-review` for PR analysis.',
               'triage-closed-issue': '`@torchxpubot triage` only runs on open issues. Please reopen the issue to triage it.',
+              'pr-only-on-issue': 'This command only runs on pull requests. On issues, use `@torchxpubot triage` or `@torchxpubot help`.',
             };
             const body = messages[err] || 'Command not applicable in this context.';
             await github.rest.issues.createComment({
