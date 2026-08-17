@@ -37,6 +37,7 @@ jobs:
       pytorch_ref: ${{ steps.parse.outputs.pytorch_ref }}
       revert_reason: ${{ steps.parse.outputs.revert_reason }}
       pr_number: ${{ steps.parse.outputs.pr_number }}
+      issue_number: ${{ steps.parse.outputs.issue_number }}
       actor: ${{ steps.parse.outputs.actor }}
       authorized: ${{ steps.parse.outputs.authorized }}
     steps:
@@ -60,7 +61,9 @@ jobs:
             const body = context.payload.comment.body;
             const actor = context.payload.comment.user.login;
             const assoc = context.payload.comment.author_association;
-            const prNumber = context.payload.issue.number;
+            const issueNumber = context.payload.issue.number;
+            const isPR = !!context.payload.issue.pull_request;
+            const prNumber = isPR ? issueNumber : '';
 
             // Extract the @torchxpubot command line
             const match = body.match(/^@torchxpubot\s+(\S+)(.*)/i);
@@ -72,11 +75,12 @@ jobs:
 
             const command = match[1].toLowerCase();
             const args = (match[2] || '').trim();
-            const validCommands = ['merge', 'revert', 'rebase', 'lint', 'rerun', 'review', 'pr-review', 'ut-check', 'check-ut', 'ut', 'help'];
+            const validCommands = ['merge', 'revert', 'rebase', 'lint', 'rerun', 'review', 'pr-review', 'ut-check', 'check-ut', 'ut', 'triage', 'help'];
 
             if (!validCommands.includes(command)) {
               core.setOutput('command', 'invalid');
               core.setOutput('pr_number', prNumber);
+              core.setOutput('issue_number', String(issueNumber));
               core.setOutput('actor', actor);
               core.setOutput('authorized', 'false');
               return;
@@ -86,6 +90,27 @@ jobs:
             const normalizedCommand = (command === 'pr-review') ? 'review'
               : (command === 'check-ut' || command === 'ut') ? 'ut-check'
               : command;
+
+            // Context check: triage is issue-only, help works on both,
+            // the rest are PR-only.
+            if (normalizedCommand === 'triage') {
+              if (isPR) {
+                core.setOutput('command', 'invalid');
+                core.setOutput('pr_number', prNumber);
+                core.setOutput('issue_number', String(issueNumber));
+                core.setOutput('actor', actor);
+                core.setOutput('authorized', 'false');
+                return;
+              }
+              if (context.payload.issue.state !== 'open') {
+                core.setOutput('command', 'invalid');
+                core.setOutput('pr_number', prNumber);
+                core.setOutput('issue_number', String(issueNumber));
+                core.setOutput('actor', actor);
+                core.setOutput('authorized', 'false');
+                return;
+              }
+            }
 
             // Permission check
             const privileged = ['OWNER', 'MEMBER', 'COLLABORATOR'];
@@ -137,6 +162,7 @@ jobs:
             core.setOutput('pytorch_ref', pytorchRef);
             core.setOutput('revert_reason', revertReason);
             core.setOutput('pr_number', prNumber);
+            core.setOutput('issue_number', String(issueNumber));
             core.setOutput('actor', actor);
             core.setOutput('authorized', String(authorized));
 
@@ -833,6 +859,91 @@ jobs:
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: ${{ env.COST_TRACKING_ISSUE }},
               body: `\`${date}\` [\`review\`](${jobUrl}) on #${{ needs.parse-command.outputs.pr_number }} — **$${cost}** (${inTok} in / ${outTok} out) [${status}]`
+            });
+
+  triage:
+    needs: parse-command
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >-
+      needs.parse-command.outputs.command == 'triage'
+      && needs.parse-command.outputs.authorized == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Run AI triage
+        id: ai-triage
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_bedrock: "true"
+          github_token: ${{ secrets.MERGE_TOKEN }}
+          settings: '{"alwaysThinkingEnabled": true}'
+          claude_args: "--model ${{ env.BEDROCK_MODEL }} --max-turns 20 --allowedTools ${{ env.CLAUDE_ALLOWED_TOOLS }}"
+          prompt: |
+            Use the /issue-triage skill to triage issue
+            #${{ needs.parse-command.outputs.issue_number }} in ${{ github.repository }}.
+            The skill will post its result as a comment on the issue and apply
+            matching labels; do not post any additional comment yourself.
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+
+      - name: "Verify: AI triage succeeded"
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ secrets.MERGE_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const file = '${{ steps.ai-triage.outputs.execution_file }}';
+            let ok = false;
+            if (file && fs.existsSync(file)) {
+              const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+              const result = data.filter(e => e.type === 'result').pop();
+              console.log('Result:', JSON.stringify(result, null, 2));
+              ok = result && !result.is_error && result.total_cost_usd > 0;
+            }
+            if (!ok) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: ${{ needs.parse-command.outputs.issue_number }},
+                body: '@chuanqi129 `@torchxpubot triage` failed: Bedrock returned an error or no output. Please check AWS token validity.'
+              });
+              core.setFailed('AI triage failed.');
+            }
+
+      - name: Report usage cost
+        if: always()
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ secrets.MERGE_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const file = '${{ steps.ai-triage.outputs.execution_file }}';
+            if (!file || !fs.existsSync(file)) return;
+            const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+            const result = data.filter(e => e.type === 'result').pop();
+            if (!result) return;
+
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner, repo: context.repo.repo,
+              run_id: context.runId
+            });
+            const job = jobs.data.jobs.find(j => j.name === 'triage');
+            const jobUrl = job?.html_url || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const date = new Date().toISOString().split('T')[0];
+            const cost = (result.total_cost_usd || 0).toFixed(4);
+            const usage = Object.values(result.modelUsage || {})[0] || {};
+            const inTok = ((usage.inputTokens || 0) + (usage.cacheReadInputTokens || 0) + (usage.cacheCreationInputTokens || 0)).toLocaleString();
+            const outTok = (usage.outputTokens || 0).toLocaleString();
+            const status = result.is_error ? 'error' : 'ok';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: ${{ env.COST_TRACKING_ISSUE }},
+              body: `\`${date}\` [\`triage\`](${jobUrl}) on #${{ needs.parse-command.outputs.issue_number }} — **$${cost}** (${inTok} in / ${outTok} out) [${status}]`
             });
 
   ut-check:
