@@ -81,7 +81,7 @@ echo "$scopes" | grep -qE '^(repo|write:issues)$' \
 
 ## Step 2: Detect `reproduction_missing`
 
-Report `yes` when the issue lacks any of:
+Report `yes` when the issue lacks all of:
 
 - A reproducer command (pytest node id, `python -c ...`, shell command).
 - A test node id reference (e.g. `test_foo.py::TestBar::test_baz`).
@@ -134,7 +134,9 @@ Empty array `[]` when none are named.
 
 Evaluate in order; first match wins:
 
-1. `issue_type` is `nonbug` or an umbrella tracking task → **needs-human**
+1. `issue_type` is `nonbug` or an umbrella tracking task (a "parent"
+   issue tracking multiple skip-listed/child test issues, not a single
+   bug itself) → **needs-human**
    (reason: `"not a bug / task issue"`).
 2. `reproduction_missing == yes` → **needs-human**
    (reason: `"no reproducer or test-name reference"`).
