@@ -943,25 +943,24 @@ jobs:
           echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "sha=$(gh api repos/${{ github.repository }}/pulls/${{ needs.parse-command.outputs.pr_number }} --jq .head.sha)" >> "$GITHUB_OUTPUT"
 
+      # FORK TEST ONLY: fake model output. GATE / delay from repo variables;
+      # the real github.token is embedded to check artifact redaction.
       - name: Run AI review
         id: ai-review
-        uses: anthropics/claude-code-action@v1
-        with:
-          use_bedrock: "true"
-          github_token: ${{ github.token }}
-          settings: '{"alwaysThinkingEnabled": true}'
-          claude_args: "--model ${{ secrets.AWS_BEDROCK_MODEL_REVIEW || env.AWS_BEDROCK_MODEL }} --max-turns 60 --allowedTools ${{ env.CLAUDE_ALLOWED_TOOLS }}"
-          prompt: |
-            Use the /pr-review skill to review PR #${{ needs.parse-command.outputs.pr_number }}
-            in the ${{ github.repository }} repository.
-
-            Start your output with a single line `VERDICT: <one sentence>`
-            summarising the outcome. Everything after it is folded behind a
-            summary in the posted comment, so that line has to stand alone.
-            Follow it with the skill's `GATE:` line.
         env:
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          TOK: ${{ github.token }}
+          GATE: ${{ vars.FAKE_GATE || 'ready_for_human_review' }}
+          DELAY: ${{ vars.FAKE_SLEEP || '0' }}
+        run: |
+          sleep "$DELAY"
+          f="$RUNNER_TEMP/exec.json"
+          jq -n --arg tok "$TOK" --arg gate "$GATE" '[
+            {type: "system", subtype: "init", leaked: $tok},
+            {type: "user", tool_output: ("GITHUB_TOKEN=" + $tok)},
+            {type: "result", subtype: "success", is_error: false, total_cost_usd: 0.01, modelUsage: {m: {inputTokens: 1, outputTokens: 1}},
+             session_id: "x", usage: {}, result: ("I will review now.\n\nVERDICT: fake verdict\nGATE: " + $gate + "\n\n## PR Review\nquoted:\n```\nGATE: ready_for_human_review\n```\nleak " + $tok)}
+          ]' > "$f"
+          echo "execution_file=$f" >> "$GITHUB_OUTPUT"
 
       # Hand the result to `review-post` as data. Steps that hold MERGE_TOKEN run
       # in a separate job on a fresh runner, so nothing the model did on this
